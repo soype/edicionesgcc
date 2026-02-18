@@ -1,6 +1,14 @@
-const spreadsheet = SpreadsheetApp.openById(
-  "1IIOmkZ_rVFAtLCN6WvHU4dmoWUoVV8v7KWrTmJR0P6M"
-);
+const spreadsheet = SpreadsheetApp.openById("1IIOmkZ_rVFAtLCN6WvHU4dmoWUoVV8v7KWrTmJR0P6M");
+
+function crearLabel(name) {
+  let label = GmailApp.getUserLabelByName(name);
+  if (!label) label = GmailApp.createLabel(name);
+  return label;
+}
+
+function hasValidCurrency(body) {
+  return body.includes("AR$") || body.includes("U$S");
+}
 
 function poblarVentas() {
   try {
@@ -14,9 +22,7 @@ function poblarVentas() {
 
     const threadsSpanish = GmailApp.search('is:unread subject:"Nuevo pedido:"');
     const threadsEnglish = GmailApp.search('is:unread subject:"New Order"');
-    Logger.log(
-      `📧 Found ${threadsSpanish.length} Spanish emails and ${threadsEnglish.length} English emails`
-    );
+    Logger.log(`📧 Found ${threadsSpanish.length} Spanish emails and ${threadsEnglish.length} English emails`);
 
     const threads = [...threadsSpanish, ...threadsEnglish]
       .map((thread, index) => {
@@ -33,26 +39,18 @@ function poblarVentas() {
         const orderNumber = match ? parseInt(match[1], 10) : 0;
 
         if (orderNumber === 0) {
-          throw new Error(
-            `CRITICAL: No valid order number found in subject: "${subject}"`
-          );
+          throw new Error(`CRITICAL: No valid order number found in subject: "${subject}"`);
         }
 
         return { thread, orderNumber };
       })
       .filter((t) => t.orderNumber > 0);
 
-    Logger.log(
-      `🔢 Processing ${threads.length} valid threads with order numbers`
-    );
+    Logger.log(`🔢 Processing ${threads.length} valid threads with order numbers`);
     threads.sort((a, b) => a.orderNumber - b.orderNumber);
 
     for (let i = 0; i < threads.length; i++) {
-      Logger.log(
-        `\n🔄 Processing thread ${i + 1}/${threads.length} (Order #${
-          threads[i].orderNumber
-        })`
-      );
+      Logger.log(`\n🔄 Processing thread ${i + 1}/${threads.length} (Order #${threads[i].orderNumber})`);
 
       const messages = threads[i].thread.getMessages();
       if (!messages || messages.length === 0) {
@@ -72,20 +70,21 @@ function poblarVentas() {
           throw new Error("CRITICAL: Email body is empty or null");
         }
 
-        Logger.log(
-          "📩 EMAIL BODY:\n" +
-            body.substring(0, 500) +
-            (body.length > 500 ? "...[TRUNCATED]" : "")
-        );
+        if (!hasValidCurrency(body)) {
+          Logger.log("⏭️ Skipping email " + body.substring(0, 200) + ": unsupported currency (no AR$ / U$S)");
 
-        const {
-          customerName,
-          paymentMethod,
-          shippingMethod,
-          items,
-          orderNumber,
-          orderDate,
-        } = getOrderData(body);
+          const skippedLabel = crearLabel("SKIPPED_$");
+          message.getThread().addLabel(skippedLabel);
+
+          message.markRead(); 
+          Logger.log("❌ Skipped email marked as read");
+
+          continue;
+        }
+
+        Logger.log("📩 EMAIL BODY:\n" + body.substring(0, 500) + (body.length > 500 ? "...[TRUNCATED]" : ""));
+
+        const { customerName, paymentMethod, shippingMethod, items, orderNumber, orderDate } = getOrderData(body);
 
         if (!items?.length) {
           throw new Error("CRITICAL: No items found to process for this order");
@@ -109,37 +108,24 @@ function poblarVentas() {
             throw new Error(`CRITICAL: Item ${k + 1} is null or undefined`);
           }
 
-          const {
-            name: itemName,
-            quantity: itemQuantity,
-            price: rawPrice,
-            currency,
-          } = item;
+          const { name: itemName, quantity: itemQuantity, price: rawPrice, currency } = item;
 
           // Validate item data
           if (!itemName) {
             throw new Error(`CRITICAL: Item ${k + 1} has no name`);
           }
           if (!itemQuantity || itemQuantity <= 0) {
-            throw new Error(
-              `CRITICAL: Item ${k + 1} has invalid quantity: ${itemQuantity}`
-            );
+            throw new Error(`CRITICAL: Item ${k + 1} has invalid quantity: ${itemQuantity}`);
           }
           if (!rawPrice || rawPrice <= 0) {
-            throw new Error(
-              `CRITICAL: Item ${k + 1} has invalid price: ${rawPrice}`
-            );
+            throw new Error(`CRITICAL: Item ${k + 1} has invalid price: ${rawPrice}`);
           }
 
-          Logger.log(
-            `📊 Item details: ${itemName} × ${itemQuantity} @ ${rawPrice} ${currency}`
-          );
+          Logger.log(`📊 Item details: ${itemName} × ${itemQuantity} @ ${rawPrice} ${currency}`);
 
           const dolar = sheet.getRange("O1").getValue();
           if (!dolar || dolar <= 0) {
-            throw new Error(
-              "CRITICAL: Invalid or missing dollar rate in cell O1"
-            );
+            throw new Error("CRITICAL: Invalid or missing dollar rate in cell O1");
           }
           Logger.log(`💱 Dollar rate: ${dolar}`);
 
@@ -148,46 +134,22 @@ function poblarVentas() {
           const itemPricePerUnit = itemPrice / itemQuantity;
           const discountPercentage = 0;
 
-          Logger.log(
-            `💰 Calculated prices: Total=${itemPrice}, Per Unit=${itemPricePerUnit}`
-          );
+          Logger.log(`💰 Calculated prices: Total=${itemPrice}, Per Unit=${itemPricePerUnit}`);
 
-          const orderDateFormatted = orderDate
-            ? Utilities.formatDate(orderDate, "GMT", "dd/MM/yyyy")
-            : Utilities.formatDate(new Date(), "GMT", "dd/MM/yyyy");
+          const orderDateFormatted = orderDate ? Utilities.formatDate(orderDate, "GMT", "dd/MM/yyyy") : Utilities.formatDate(new Date(), "GMT", "dd/MM/yyyy");
 
-          const sellDataInitial = [
-            [orderNumber, nombreCliente, itemQuantity, itemName],
-          ];
+          const sellDataInitial = [[orderNumber, nombreCliente, itemQuantity, itemName]];
 
-          const sellDataFinal = [
-            [
-              itemPricePerUnit,
-              discountPercentage,
-              orderDateFormatted,
-              shippingMethod,
-              orderDateFormatted,
-              orderDateFormatted,
-              paymentMethod,
-            ],
-          ];
+          const sellDataFinal = [[itemPricePerUnit, discountPercentage, orderDateFormatted, shippingMethod, orderDateFormatted, orderDateFormatted, paymentMethod]];
 
           const columnValues = sheet.getRange("H:H").getValues();
           const lastRow = columnValues.filter(String).length;
           Logger.log(`📍 Writing to row ${lastRow + 1}`);
 
-          sheet
-            .getRange(lastRow + 1, 7, 1, sellDataInitial[0].length)
-            .setValues(sellDataInitial);
-          sheet
-            .getRange(lastRow + 1, 14, 1, sellDataFinal[0].length)
-            .setValues(sellDataFinal);
+          sheet.getRange(lastRow + 1, 7, 1, sellDataInitial[0].length).setValues(sellDataInitial);
+          sheet.getRange(lastRow + 1, 14, 1, sellDataFinal[0].length).setValues(sellDataFinal);
 
-          Logger.log(
-            `✅ Item #${
-              k + 1
-            } processed: ${itemName} × ${itemQuantity} @ ${itemPricePerUnit}`
-          );
+          Logger.log(`✅ Item #${k + 1} processed: ${itemName} × ${itemQuantity} @ ${itemPricePerUnit}`);
         }
 
         Logger.log("📝 Order #" + orderNumber + " processed.\n\n");
@@ -225,40 +187,21 @@ function getOrderData(body) {
 
   Logger.log(`📄 Processed ${lines.length} non-empty lines`);
 
-  const orderNumberMatch = lines.find((line) =>
-    line.toLowerCase().includes("order #")
-  );
-  const orderNumber = orderNumberMatch
-    ? (orderNumberMatch.match(/#(\d+)/) || [])[1]
-    : null;
+  const orderNumberMatch = lines.find((line) => line.toLowerCase().includes("order #"));
+  const orderNumber = orderNumberMatch ? (orderNumberMatch.match(/#(\d+)/) || [])[1] : null;
 
-  Logger.log(
-    `🔢 Order number extraction: ${
-      orderNumber ? "Found #" + orderNumber : "Not found"
-    }`
-  );
+  Logger.log(`🔢 Order number extraction: ${orderNumber ? "Found #" + orderNumber : "Not found"}`);
   if (orderNumberMatch) {
     Logger.log(`📝 Order line: "${orderNumberMatch}"`);
   }
 
-  const customerNameMatch =
-    body.match(
-      /received (?:the following order|a new order) from ([\s\S]*?):/i
-    ) || body.match(/Has recibido el siguiente pedido de ([\s\S]*?):/i);
+  const customerNameMatch = body.match(/received (?:the following order|a new order) from ([\s\S]*?):/i) || body.match(/Has recibido el siguiente pedido de ([\s\S]*?):/i);
 
-  const customerName = customerNameMatch
-    ? customerNameMatch[1].replace(/\s+/g, " ").trim()
-    : "";
+  const customerName = customerNameMatch ? customerNameMatch[1].replace(/\s+/g, " ").trim() : "";
 
-  Logger.log(
-    `👤 Customer name extraction: ${
-      customerName ? '"' + customerName + '"' : "Not found"
-    }`
-  );
+  Logger.log(`👤 Customer name extraction: ${customerName ? '"' + customerName + '"' : "Not found"}`);
 
-  const dateMatch = body.match(
-    /\(\s*(\d{1,2})\s+([a-zA-Zñáéíóú]+),\s*(\d{4})\s*\)/
-  );
+  const dateMatch = body.match(/\(\s*(\d{1,2})\s+([a-zA-Zñáéíóú]+),\s*(\d{4})\s*\)/);
   let orderDate = null;
   if (dateMatch) {
     const [_, day, monthNameRaw, year] = dateMatch;
@@ -298,9 +241,7 @@ function getOrderData(body) {
       const parts = line.split(currency);
 
       if (parts.length < 2) {
-        throw new Error(
-          `CRITICAL: Item line ${index + 1} missing currency separator`
-        );
+        throw new Error(`CRITICAL: Item line ${index + 1} missing currency separator`);
       }
 
       const left = parts[0] ? parts[0].trim() : "";
@@ -313,9 +254,7 @@ function getOrderData(body) {
       const price = parseFloat(right.replace(".", "").replace(",", "."));
 
       if (isNaN(price) || price <= 0) {
-        throw new Error(
-          `CRITICAL: Item line ${index + 1} has invalid price: ${right}`
-        );
+        throw new Error(`CRITICAL: Item line ${index + 1} has invalid price: ${right}`);
       }
 
       const nameMatch = left.match(/^(.*) -/);
@@ -325,19 +264,13 @@ function getOrderData(body) {
       const quantity = quantityMatch ? parseInt(quantityMatch[1]) : 1;
 
       if (quantity <= 0) {
-        throw new Error(
-          `CRITICAL: Item line ${index + 1} has invalid quantity: ${quantity}`
-        );
+        throw new Error(`CRITICAL: Item line ${index + 1} has invalid quantity: ${quantity}`);
       }
 
       const codeMatch = left.match(/\(#([A-Z]{2,3})\s+([^)]+)\)/);
       const code = codeMatch ? `${codeMatch[1]} ${codeMatch[2]}` : "";
 
-      Logger.log(
-        `✅ Parsed item ${
-          index + 1
-        }: ${name} × ${quantity} @ ${price} ${currency}`
-      );
+      Logger.log(`✅ Parsed item ${index + 1}: ${name} × ${quantity} @ ${price} ${currency}`);
 
       return {
         name,
@@ -351,9 +284,7 @@ function getOrderData(body) {
 
   Logger.log(`✅ Successfully parsed ${items.length} valid items`);
 
-  const paymentMethod = body.includes("U$S")
-    ? "U$S Pay Pal"
-    : "AR$ Mercado Pago";
+  const paymentMethod = body.includes("U$S") ? "U$S Pay Pal" : "AR$ Mercado Pago";
 
   let shippingMethod = "Digital";
   if (body.includes("Física Argentina") || body.includes("Castillo")) {
@@ -362,19 +293,13 @@ function getOrderData(body) {
 
   Logger.log("🔢 Order Number: " + orderNumber);
   Logger.log("👤 Customer Name: " + customerName);
-  Logger.log(
-    "📅 Order Date: " + (orderDate ? orderDate.toDateString() : "N/A")
-  );
+  Logger.log("📅 Order Date: " + (orderDate ? orderDate.toDateString() : "N/A"));
   Logger.log("💳 Payment Method: " + paymentMethod);
   Logger.log("🚚 Shipping Method: " + shippingMethod);
   Logger.log("🛍️ Items:");
 
   items.forEach((item, idx) => {
-    Logger.log(
-      `  #${idx + 1}: ${item.name} × ${item.quantity} @ ${item.price} ${
-        item.currency
-      } [${item.code}]`
-    );
+    Logger.log(`  #${idx + 1}: ${item.name} × ${item.quantity} @ ${item.price} ${item.currency} [${item.code}]`);
   });
 
   return {
@@ -415,11 +340,7 @@ function extractItems(body) {
       let itemLine = line;
 
       // Si la línea actual termina con "AR$" o "U$S" pero no tiene precio, buscar en la siguiente línea
-      if (
-        i + 1 < lines.length &&
-        (line.endsWith("AR$") || line.endsWith("U$S")) &&
-        !line.match(/(AR\$|U\$S)\s*[\d.,]+/)
-      ) {
+      if (i + 1 < lines.length && (line.endsWith("AR$") || line.endsWith("U$S")) && !line.match(/(AR\$|U\$S)\s*[\d.,]+/)) {
         const nextLine = lines[i + 1];
         if (nextLine && nextLine.match(/^[\d.,]+$/)) {
           // La siguiente línea contiene solo números (el precio)
@@ -429,11 +350,7 @@ function extractItems(body) {
         }
       }
       // Si la línea siguiente no tiene "AR$" o "U$S", unirla (lógica original)
-      else if (
-        i + 1 < lines.length &&
-        !line.includes("AR$") &&
-        !line.includes("U$S")
-      ) {
+      else if (i + 1 < lines.length && !line.includes("AR$") && !line.includes("U$S")) {
         const nextLine = lines[i + 1];
         if (nextLine && nextLine.match(/^(AR\$|U\$S)/)) {
           itemLine += " " + nextLine;
@@ -484,32 +401,22 @@ function setCustomerData(body, customerName) {
       item !== "BILLING ADDRESS" &&
       item !== "----------------------------------------" &&
       item !== "Felicitaciones por la venta." &&
-      item !== "Ediciones GCC"
+      item !== "Ediciones GCC",
   );
 
-  const cuit =
-    clientInfo[0] && typeof clientInfo[0] === "string"
-      ? clientInfo[0].replace("DNI o ID:", "").trim()
-      : "";
+  const cuit = clientInfo[0] && typeof clientInfo[0] === "string" ? clientInfo[0].replace("DNI o ID:", "").trim() : "";
 
-  const nombreCliente =
-    clientInfo[1] &&
-    typeof clientInfo[1] === "string" &&
-    clientInfo[1].trim() === customerName
-      ? clientInfo[1].trim()
-      : customerName;
+  const nombreCliente = clientInfo[1] && typeof clientInfo[1] === "string" && clientInfo[1].trim() === customerName ? clientInfo[1].trim() : customerName;
 
   const coro =
     clientInfo.length === 3
-      ? clientInfo[2] &&
-        typeof clientInfo[2] === "string" &&
-        clientInfo[2].trim() === customerName
+      ? clientInfo[2] && typeof clientInfo[2] === "string" && clientInfo[2].trim() === customerName
         ? clientInfo[1] && typeof clientInfo[1] === "string"
           ? clientInfo[1].trim()
           : ""
         : clientInfo[2] && typeof clientInfo[2] === "string"
-        ? clientInfo[2].trim()
-        : ""
+          ? clientInfo[2].trim()
+          : ""
       : "";
 
   const domicilio = clientInfo
@@ -517,20 +424,10 @@ function setCustomerData(body, customerName) {
     .map((item) => (item && typeof item === "string" ? item.trim() : ""))
     .join("\n");
 
-  const telCel =
-    clientInfo[clientInfo.length - 2] &&
-    typeof clientInfo[clientInfo.length - 2] === "string"
-      ? clientInfo[clientInfo.length - 2].trim()
-      : "";
-  const mail =
-    clientInfo[clientInfo.length - 1] &&
-    typeof clientInfo[clientInfo.length - 1] === "string"
-      ? clientInfo[clientInfo.length - 1].trim()
-      : "";
+  const telCel = clientInfo[clientInfo.length - 2] && typeof clientInfo[clientInfo.length - 2] === "string" ? clientInfo[clientInfo.length - 2].trim() : "";
+  const mail = clientInfo[clientInfo.length - 1] && typeof clientInfo[clientInfo.length - 1] === "string" ? clientInfo[clientInfo.length - 1].trim() : "";
 
-  Logger.log(
-    `📋 Customer data extracted: CUIT=${cuit}, Name=${nombreCliente}, Email=${mail}`
-  );
+  Logger.log(`📋 Customer data extracted: CUIT=${cuit}, Name=${nombreCliente}, Email=${mail}`);
 
   let clientExists = false;
   const dataRange = sheet.getRange("B:B");

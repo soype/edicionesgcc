@@ -1,6 +1,10 @@
 const spreadsheet = SpreadsheetApp.openById("1IIOmkZ_rVFAtLCN6WvHU4dmoWUoVV8v7KWrTmJR0P6M");
 
 function crearLabel(name) {
+  if (typeof name !== "string" || !name.trim()) {
+    Logger.log("⚠️ crearLabel called with invalid name (ignored): " + String(name));
+    return null;
+  }
   let label = GmailApp.getUserLabelByName(name);
   if (!label) label = GmailApp.createLabel(name);
   return label;
@@ -20,8 +24,13 @@ function poblarVentas() {
     }
     Logger.log('✅ "Ventas" sheet found');
 
-    const threadsSpanish = GmailApp.search('is:unread subject:"Nuevo pedido:"');
-    const threadsEnglish = GmailApp.search('is:unread subject:"New Order"');
+    const processedLabel = crearLabel("PROCESSED_VENTAS");
+    const skippedLabel = crearLabel("SKIPPED");
+
+    // IMPORTANTE: A partir del 18/02/2026 procesamos por Label. Antes se procesaba por leido o no leido. 
+    // Nunca borrar el after:2026/02/18 o se procesarán mails viejos
+    const threadsSpanish = GmailApp.search('after:2026/02/18 -label:SKIPPED -label:PROCESSED_VENTAS subject:"Nuevo pedido:"');
+    const threadsEnglish = GmailApp.search('after:2026/02/18 -label:SKIPPED -label:PROCESSED_VENTAS (subject:"New order:" OR subject:"You\'ve got a new order")');
     Logger.log(`📧 Found ${threadsSpanish.length} Spanish emails and ${threadsEnglish.length} English emails`);
 
     const threads = [...threadsSpanish, ...threadsEnglish]
@@ -73,7 +82,6 @@ function poblarVentas() {
         if (!hasValidCurrency(body)) {
           Logger.log("⏭️ Skipping email " + body.substring(0, 200) + ": unsupported currency (no AR$ / U$S)");
 
-          const skippedLabel = crearLabel("SKIPPED_$");
           message.getThread().addLabel(skippedLabel);
 
           message.markRead(); 
@@ -155,6 +163,7 @@ function poblarVentas() {
         Logger.log("📝 Order #" + orderNumber + " processed.\n\n");
 
         message.markRead();
+        message.getThread().addLabel(processedLabel);
         Logger.log("✅ Email marked as read");
       }
     }
